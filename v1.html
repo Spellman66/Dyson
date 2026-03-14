@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<body style="background: #000005; margin: 0; overflow: hidden; font-family: 'Share Tech Mono', monospace;">
+    <div style="position: absolute; top: 20px; left: 20px; background: rgba(0, 10, 20, 0.9); padding: 15px; border: 1px solid #00ffff; color: #00ffff; z-index: 10; pointer-events: none; box-shadow: 0 0 15px rgba(0,255,255,0.2);">
+        <div style="font-weight: bold; border-bottom: 2px solid #00ffff; margin-bottom: 5px;">DYSON SWARM: HIGH-DENSITY CORE</div>
+        ESTRUCTURA: NUBE VOLUMÉTRICA DE ESTATITAS<br>
+        NODOS: 4000 (SINCRONIZADOS)<br>
+        <div id="status" style="font-size: 0.8em; color: #55ff55; margin-top:5px;">> ESTABILIDAD DE ENJAMBRE: NOMINAL</div>
+    </div>
+    <canvas id="sim"></canvas>
+
+<script>
+const canvas = document.getElementById('sim');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const RADIO = 240;
+const PERSPECTIVA = 800;
+let tiempo = 0;
+
+class Estatita {
+    constructor(phi, theta, r_off) {
+        this.phi = phi;
+        this.theta = theta;
+        this.r = RADIO + r_off; // Añadir variación de radio para volumen
+        this.size = 1 + Math.random() * 2;
+    }
+
+    getPos(t, rotX, rotY, rotZ) {
+        // Rotación compleja de la nube entera en 3 ejes
+        let phi = this.phi + t * 0.1;
+        let theta = this.theta;
+
+        let x = this.r * Math.sin(theta) * Math.cos(phi);
+        let y = this.r * Math.sin(theta) * Math.sin(phi);
+        let z = this.r * Math.cos(theta);
+
+        // Rotación de cámara (Matriz de rotación simplificada)
+        // Rotar en X
+        let y1 = y * Math.cos(rotX) - z * Math.sin(rotX);
+        let z1 = y * Math.sin(rotX) + z * Math.cos(rotX);
+        // Rotar en Y
+        let x1 = x * Math.cos(rotY) + z1 * Math.sin(rotY);
+        let z2 = -x * Math.sin(rotY) + z1 * Math.cos(rotY);
+        // Rotar en Z
+        let x2 = x1 * Math.cos(rotZ) - y1 * Math.sin(rotZ);
+        let y2 = x1 * Math.sin(rotZ) + y1 * Math.cos(rotZ);
+
+        // Proyección
+        let factor = PERSPECTIVA / (PERSPECTIVA + z2);
+        return {
+            x: x2 * factor + canvas.width / 2,
+            y: y2 * factor + canvas.height / 2,
+            z: z2,
+            f: factor
+        };
+    }
+}
+
+// Generar 4000 estatitas distribuidas esféricamente con variación de radio
+let enjambre = [];
+for (let i = 0; i < 4000; i++) {
+    let theta = Math.acos(Math.random() * 2 - 1);
+    let phi = Math.random() * Math.PI * 2;
+    let r_off = (Math.random() - 0.5) * 40; // Volumen real: grosor de la nube
+    enjambre.push(new Estatita(phi, theta, r_off));
+}
+
+function draw() {
+    // Fondo negro profundo con tinte azul nebulosa
+    ctx.fillStyle = "rgba(0, 1, 10, 0.4)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    tiempo += 0.01;
+
+    // Rotaciones de cámara automáticas
+    let rotX = Math.sin(tiempo * 0.2) * 0.3;
+    let rotY = tiempo * 0.1;
+    let rotZ = Math.cos(tiempo * 0.15) * 0.2;
+
+    // Sol con resplandor volumétrico central (Bloom)
+    let sunG = ctx.createRadialGradient(canvas.width/2, canvas.height/2, 0, canvas.width/2, canvas.height/2, 80);
+    sunG.addColorStop(0, "rgba(255, 255, 255, 1)");
+    sunG.addColorStop(0.2, "rgba(255, 200, 0, 0.8)");
+    sunG.addColorStop(1, "transparent");
+    ctx.fillStyle = sunG;
+    ctx.beginPath(); ctx.arc(canvas.width/2, canvas.height/2, 100, 0, Math.PI*2); ctx.fill();
+
+    // Procesar posiciones y ordenar por profundidad para el sombreado volumétrico
+    let proyectados = enjambre.map(e => ({ e, p: e.getPos(tiempo, rotX, rotY, rotZ) }));
+    proyectados.sort((a, b) => b.p.z - a.p.z);
+
+    // Dibujar estatitas con sombreado volumétrico
+    proyectados.forEach(item => {
+        let p = item.p;
+        
+        // Oclusión solar: si está detrás del Sol (Z > 0), desaparece
+        if (p.z > 0 && Math.sqrt((p.x - canvas.width/2)**2 + (p.y - canvas.height/2)**2) < 40) return;
+
+        // Sombreado de profundidad volumétrico (Depth Slicing)
+        // Dividimos Z en capas para calcular el color y brillo
+        let z_ratio = (p.z + RADIO) / (2 * RADIO); // 0 (al frente) a 1 (atrás)
+        z_ratio = Math.max(0, Math.min(1, z_ratio)); // Limitar entre 0 y 1
+
+        // Color: Al frente es Cian, atrás se vuelve Magenta/Azul nebulosa
+        let r = Math.floor(z_ratio * 150);
+        let g = Math.floor((1 - z_ratio) * 255);
+        let b = 255;
+        
+        // Brillo y opacidad basados en Z y cercanía al Sol
+        // Los del frente son nítidos, los de atrás son borrosos
+        let brillo = Math.max(0.1, 1 - z_ratio); 
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${brillo * p.f * 0.8})`;
+        
+        // Efecto de neón para los frontales
+        if (z_ratio < 0.2) {
+            ctx.shadowBlur = 10 * p.f;
+            ctx.shadowColor = "#0ff";
+        }
+
+        ctx.beginPath();
+        // El tamaño también depende de la perspectiva y el brillo
+        ctx.arc(p.x, p.y, item.e.size * p.f * brillo, 0, Math.PI*2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+    });
+
+    requestAnimationFrame(draw);
+}
+draw();
+</script>
+</body>
+</html>
